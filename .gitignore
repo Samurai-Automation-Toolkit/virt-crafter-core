@@ -1,0 +1,6 @@
+logs/
+temp/
+iso/*
+*.pid
+*.swp
+.DS_Store
