@@ -1,0 +1,198 @@
+# VirtCrafter Core - Rocky Linux 9.6 Kickstart Template
+# This file is hardcoded. Do not edit.
+# Generated automatically by launcher.sh
+
+# Use text mode install (required for serial console)
+text
+
+# Use the local ISO as the package source
+cdrom
+
+# System language and keyboard
+lang en_US.UTF-8
+keyboard us
+
+# Network configuration
+network --bootproto=dhcp --device=eth0 --onboot=on --activate --noipv6
+network --hostname={{HOSTNAME}}
+
+# Root password (hardcoded SHA-512 hash)
+rootpw --iscrypted $6$tRpmLADqbgBjqbGE$sYzMi1WFXzvaySY9nLsZnDg7u3wTSPborkc4WYJrJngi.nvOFGV6vJ1RkZXD.S.ZlSMJ7rCyG5Nb0CtySk71o0
+
+# User account (fixed as 'ops')
+user --name={{USERNAME}} --password=$6$0p2QfP3ul17oJ2Qd$5o76Qmdz3agxUnNw3xfyPJ61C/nljBzoE85r/6lNJWLxNQ.uQcjin0Wg7.1NGkFn1EQ65ctCkRhCOA7DulTXp. --iscrypted --groups=wheel --shell=/bin/bash
+
+# System timezone
+timezone {{TIMEZONE}} --utc
+
+# System bootloader
+bootloader --location=mbr --boot-drive=vda
+
+# Disk partitioning
+zerombr
+clearpart --all --initlabel --drives=vda
+
+# MBR partitioning (compatible with BIOS)
+part /boot --fstype=xfs --size=1024 --ondisk=vda
+part pv.01 --size=1 --grow --ondisk=vda
+volgroup vg_main pv.01
+logvol / --fstype=xfs --name=lv_root --vgname=vg_main --size=8192 --grow
+logvol swap --name=lv_swap --vgname=vg_main --size=2048
+
+# Security configuration
+firewall --enabled --service=ssh
+selinux --enforcing
+
+# Skip initial setup and license screens
+firstboot --disabled
+skipx
+
+# Package selection
+%packages
+@^minimal-environment
+@core
+curl
+net-tools
+openssh-server
+openssh-clients
+chrony
+sudo
+bash-completion
+tar
+gzip
+-NetworkManager-wifi
+-NetworkManager-wwan
+%end
+
+# Post-installation configuration
+%post --log=/var/log/ks-post.log
+#!/bin/bash
+
+set -x
+
+# Set hostname permanently (already set by Kickstart)
+echo "{{HOSTNAME}}" > /etc/hostname
+hostnamectl set-hostname "{{HOSTNAME}}" 2>/dev/null || hostname "{{HOSTNAME}}"
+
+# Configure hosts file
+cat > /etc/hosts << 'EOFHOSTS'
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+127.0.1.1   {{HOSTNAME}}
+EOFHOSTS
+
+# Enable and start critical services
+systemctl enable sshd NetworkManager chronyd 2>/dev/null || true
+systemctl start sshd 2>/dev/null || true
+
+# Configure chrony for time sync
+cat > /etc/chrony.conf << 'EOFCHRONY'
+server 0.pool.ntp.org iburst
+server 1.pool.ntp.org iburst
+server 2.pool.ntp.org iburst
+server 3.pool.ntp.org iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony
+EOFCHRONY
+
+systemctl restart chronyd 2>/dev/null || true
+
+# Configure sudo for wheel group without password
+cat > /etc/sudoers.d/wheel-nopasswd << 'EOFSUDO'
+%wheel ALL=(ALL) NOPASSWD: ALL
+EOFSUDO
+chmod 440 /etc/sudoers.d/wheel-nopasswd
+
+# SSH security configuration
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# Restart SSH to apply changes
+systemctl restart sshd 2>/dev/null || true
+
+# Create welcome message
+cat > /etc/motd << 'EOFMOTD'
+╔═══════════════════════════════════════╗
+║   Welcome to {{HOSTNAME}}
+║   Created with VirtCrafter Core
+║   Rocky Linux 9.6
+╚═══════════════════════════════════════╝
+EOFMOTD
+
+# Update GRUB timeout for faster boot
+if [ -f /etc/default/grub ]; then
+    sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/' /etc/default/grub
+    if [ -f /boot/grub2/grub.cfg ]; then
+        grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+    elif [ -f /boot/efi/EFI/*/grub.cfg ]; then
+        grub2-mkconfig -o /boot/efi/EFI/*/grub.cfg 2>/dev/null || true
+    fi
+fi
+
+# Clean up package cache
+dnf clean all 2>/dev/null || true
+
+# Create installation marker
+touch /root/.virt_crafter_installed
+date > /root/.virt_crafter_installed
+
+# Create shutdown script for first boot
+cat > /etc/rc.local << 'EOF_RCLOCAL'
+#!/bin/bash
+# This script runs on first boot to ensure clean shutdown
+
+# Remove ourselves to prevent running again
+rm -f /etc/rc.local
+
+# If this is the first boot after installation, do a proper shutdown
+if [ -f /root/.virt_crafter_installed ]; then
+    echo "First boot after installation - performing shutdown..."
+    sleep 5
+    rm -f /root/.virt_crafter_installed
+    shutdown -h now
+fi
+EOF_RCLOCAL
+
+chmod +x /etc/rc.local
+
+# Alternative systemd service for shutdown
+cat > /etc/systemd/system/virt-crafter-shutdown.service << 'EOF_SERVICE'
+[Unit]
+Description=VirtCrafter Core First Boot Shutdown
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'if [ -f /root/.virt_crafter_installed ]; then sleep 10; rm -f /root/.virt_crafter_installed; shutdown -h now; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+
+systemctl enable virt-crafter-shutdown.service
+
+# Log completion
+cat >> /var/log/ks-post.log << EOFLOG
+==================================
+Kickstart completed: $(date)
+Hostname: {{HOSTNAME}}
+User: {{USERNAME}}
+OS: Rocky Linux 9.6
+==================================
+EOFLOG
+
+# Ensure proper permissions
+chmod 600 /root/.virt_crafter_installed
+chmod 644 /etc/motd /etc/hosts
+
+echo "Rocky Linux 9.6 post-installation completed successfully" >> /var/log/ks-post.log
+
+%end
+
+# Shutdown after installation (more reliable than reboot)
+shutdown
