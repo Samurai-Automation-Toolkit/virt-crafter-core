@@ -4,7 +4,7 @@
 
 ---
 
-![VirtCrafter Core](https://github.com/Samurai-Automation-Toolkit/virt-crafter-core/blob/main/virt-crafter-core-thumbnail.png)
+![VirtCrafter Core](https://github.com/Samurai-Automation-Toolkit/virt-crafter-core/blob/main/virt-crafter-core-thumbnail.ipg)
 
 ## 🎯 What Is This?
 
